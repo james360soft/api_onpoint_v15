@@ -147,9 +147,10 @@ class TransaccionRecepcionController(http.Controller):
                             "uom": move.product_uom.name if move.product_uom else "UND",
                             "location_dest_id": move.location_dest_id.id or 0,
                             "location_dest_name": move.location_dest_id.display_name or "",
-                            "location_barcode": move.location_dest_id.barcode or "",
+                            "location_dest_barcode": move.location_dest_id.barcode or "",
                             "location_id": move.location_id.id or 0,
                             "location_name": move.location_id.display_name or "",
+                            "location_barcode": move.location_id.barcode or "",
                             "weight": product.weight or 0,
                         }
 
@@ -296,9 +297,10 @@ class TransaccionRecepcionController(http.Controller):
                     "uom": move.product_uom.name if move.product_uom else "UND",
                     "location_dest_id": move.location_dest_id.id or 0,
                     "location_dest_name": move.location_dest_id.display_name or "",
-                    "location_barcode": move.location_dest_id.barcode or "",
+                    "location_dest_barcode": move.location_dest_id.barcode or "",
                     "location_id": move.location_id.id or 0,
                     "location_name": move.location_id.display_name or "",
+                    "location_barcode": move.location_id.barcode or "",
                     "weight": product.weight or 0,
                     "detalle_lineas": [],
                 }
