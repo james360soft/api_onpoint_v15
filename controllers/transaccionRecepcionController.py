@@ -1,6 +1,8 @@
 from odoo import http
 from odoo.http import request
 from odoo.exceptions import AccessError
+from datetime import datetime, timedelta
+import pytz
 
 
 class TransaccionRecepcionController(http.Controller):
@@ -33,6 +35,7 @@ class TransaccionRecepcionController(http.Controller):
                             ("state", "=", "assigned"),
                             ("picking_type_code", "=", "incoming"),
                             ("picking_type_id.warehouse_id", "=", warehouse.id),
+                            ("is_return_picking", "=", False),
                             "|",  # <- OR lógico para incluir ambos casos
                             ("user_id", "=", user.id),  # Recepciones asignadas al usuario actual
                             ("user_id", "=", False),  # Recepciones sin responsable asignado
@@ -98,6 +101,7 @@ class TransaccionRecepcionController(http.Controller):
                                     "barcode": barcode.name,
                                     "id_move": move.id,
                                     "id_product": product.id,
+                                    "batch_id": picking.id,
                                 }
                                 for barcode in product.barcode_ids
                                 if barcode.name
@@ -468,6 +472,8 @@ class TransaccionRecepcionController(http.Controller):
                 cantidad = item.get("cantidad_separada")
                 fecha_transaccion = item.get("fecha_transaccion")
                 observacion = item.get("observacion")
+                id_operario = item.get("id_operario")
+                time_line = item.get("time_line")
 
                 # ✅ Validar datos esenciales
                 if not product_id or not cantidad:
@@ -513,6 +519,14 @@ class TransaccionRecepcionController(http.Controller):
                 # ✅ Crear la línea de movimiento
                 move_line = request.env["stock.move.line"].sudo().create(move_line_vals)
 
+                if move_line:
+                    # registrar los campos date_transaction new_observation time user_operator_id is_done_item
+                    move_line.date_transaction = procesar_fecha_naive(fecha_transaccion, "America/Bogota") if fecha_transaccion else datetime.now(pytz.utc)
+                    move_line.new_observation = observacion
+                    move_line.time = time_line
+                    move_line.user_operator_id = id_operario
+                    move_line.is_done_item = True
+
                 array_result.append(
                     {
                         "producto": product.name,
@@ -520,7 +534,11 @@ class TransaccionRecepcionController(http.Controller):
                         "lote": lot.name if lot else "",
                         "ubicacion_destino": ubicacion_destino,
                         "fecha_transaccion": fecha_transaccion,
-                        "observacion": observacion,
+                        "date_transaction": move_line.date_transaction,
+                        "new_observation": move_line.new_observation,
+                        "time": move_line.time,
+                        "user_operator_id": move_line.user_operator_id.id,
+                        "is_done_item": move_line.is_done_item,
                     }
                 )
 
@@ -562,3 +580,206 @@ class TransaccionRecepcionController(http.Controller):
 
         except Exception as e:
             return {"code": 500, "msg": f"Error interno: {str(e)}"}
+
+
+    @http.route("/api/complete_recepcion", auth="user", type="json", methods=["POST"], csrf=False)
+    def complete_recepcion(self, **auth):
+        try:
+            user = request.env.user
+
+            # ✅ Validar usuario
+            if not user:
+                return {"code": 400, "msg": "Usuario no encontrado"}
+
+            id_recepcion = auth.get("id_recepcion", 0)
+            crear_backorder = auth.get("crear_backorder", True)  # Parámetro para controlar la creación de backorder
+
+            # ✅ Buscar recepción por ID
+            recepcion = request.env["stock.picking"].sudo().search([("id", "=", id_recepcion), ("picking_type_code", "=", "incoming"), ("state", "!=", "done")], limit=1)
+
+            if not recepcion:
+                return {"code": 400, "msg": f"Recepción no encontrada o ya completada con ID {id_recepcion}"}
+
+            # Llamar a button_validate para intentar la validación
+            # Esto puede devolver un wizard si la recepción está incompleta
+            result = recepcion.sudo().with_context(skip_backorder=not crear_backorder).button_validate()
+
+            # Si el resultado es un diccionario, significa que se requiere acción adicional (un wizard)
+            if isinstance(result, dict) and result.get("res_model"):
+                wizard_model = result.get("res_model")
+
+                # Para asistente de backorder
+                if wizard_model == "stock.backorder.confirmation":
+                    wizard_id = result.get("res_id") or False
+
+                    # Si no hay ID, necesitamos crear el wizard
+                    if not wizard_id:
+                        wizard = request.env[wizard_model].sudo().create({"pick_ids": [(4, recepcion.id)]})
+                    else:
+                        wizard = request.env[wizard_model].sudo().browse(wizard_id)
+
+                    # Procesamos según la opción de crear_backorder
+                    if crear_backorder:
+                        wizard.sudo().process()
+                        return {"code": 200, "msg": "Recepción parcial completada y backorder creado"}
+                    else:
+                        wizard.sudo().process_cancel_backorder()
+                        return {"code": 200, "msg": "Recepción parcial completada sin crear backorder"}
+
+                # Para asistente de transferencia inmediata
+                elif wizard_model == "stock.immediate.transfer":
+                    wizard_id = result.get("res_id") or False
+
+                    if not wizard_id:
+                        wizard = request.env[wizard_model].sudo().create({"pick_ids": [(4, recepcion.id)]})
+                    else:
+                        wizard = request.env[wizard_model].sudo().browse(wizard_id)
+
+                    wizard.sudo().process()
+                    return {"code": 200, "msg": "Recepción procesada con transferencia inmediata"}
+
+                else:
+                    return {"code": 400, "msg": f"Se requiere un asistente no soportado: {wizard_model}"}
+
+            # Si llegamos aquí, button_validate completó la validación sin necesidad de asistentes
+            return {"code": 200, "msg": "Recepción completada correctamente"}
+
+        except Exception as e:
+            # Registrar el error completo para depuración
+            return {"code": 500, "msg": f"Error interno: {str(e)}"}
+
+    ## POST Crear Lote
+    @http.route("/api/create_lote", auth="user", type="json", methods=["POST"], csrf=False)
+    def create_lote(self, **auth):
+        try:
+            user = request.env.user
+
+            # ✅ Validar usuario
+            if not user:
+                return {"code": 400, "msg": "Usuario no encontrado"}
+
+            id_producto = auth.get("id_producto", 0)
+            nombre_lote = auth.get("nombre_lote", "")
+            fecha_vencimiento = auth.get("fecha_vencimiento", "")
+
+            # ✅ Validar ID de producto
+            if not id_producto:
+                return {"code": 400, "msg": "ID de producto no válido"}
+
+            # ✅ Validar nombre de lote
+            if not nombre_lote:
+                return {"code": 400, "msg": "Nombre de lote no válido"}
+
+            # ✅ Buscar producto por ID
+            product = request.env["product.product"].sudo().search([("id", "=", id_producto)], limit=1)
+
+            # ✅ Validar producto
+            if not product:
+                return {"code": 400, "msg": "Producto no encontrado"}
+
+            # ✅ Crear lote
+            lot = (
+                request.env["stock.production.lot"]
+                .sudo()
+                .create(
+                    {
+                        "name": nombre_lote,
+                        "product_id": product.id,
+                        "expiration_date": fecha_vencimiento,
+                        "alert_date": fecha_vencimiento,
+                        "use_date": fecha_vencimiento,
+                        "removal_date": fecha_vencimiento,
+                    }
+                )
+            )
+
+            response = {
+                "id": lot.id,
+                "name": lot.name,
+                "quantity": lot.product_qty,
+                "expiration_date": lot.expiration_date,
+                "alert_date": lot.alert_date,
+                "use_date": lot.use_date,
+                "removal_date": lot.removal_date,
+                "product_id": lot.product_id.id,
+                "product_name": lot.product_id.name,
+            }
+
+            return {"code": 200, "result": response}
+
+        except Exception as e:
+            return {"code": 500, "msg": f"Error interno: {str(e)}"}
+
+    ## POST Actualizar Lote
+    @http.route("/api/update_lote", auth="user", type="json", methods=["POST"], csrf=False)
+    def update_lote(self, **auth):
+        try:
+            user = request.env.user
+
+            # ✅ Validar usuario
+            if not user:
+                return {"code": 400, "msg": "Usuario no encontrado"}
+
+            id_lote = auth.get("id_lote", 0)
+            nombre_lote = auth.get("nombre_lote", "")
+            fecha_vencimiento = auth.get("fecha_vencimiento", "")
+
+            # ✅ Validar ID de lote
+            if not id_lote:
+                return {"code": 400, "msg": "ID de lote no válido"}
+
+            # ✅ Validar nombre de lote
+            if not nombre_lote:
+                return {"code": 400, "msg": "Nombre de lote no válido"}
+
+            # ✅ Buscar lote por ID
+            lot = request.env["stock.production.lot"].sudo().search([("id", "=", id_lote)], limit=1)
+
+            # ✅ Validar lote
+            if not lot:
+                return {"code": 400, "msg": "Lote no encontrado"}
+
+            # ✅ Actualizar lote
+            lot.sudo().write(
+                {
+                    "name": nombre_lote,
+                    "expiration_date": fecha_vencimiento,
+                    "alert_date": fecha_vencimiento,
+                    "use_date": fecha_vencimiento,
+                    "removal_date": fecha_vencimiento,
+                }
+            )
+
+            response = {
+                "id": lot.id,
+                "name": lot.name,
+                "quantity": lot.product_qty,
+                "expiration_date": lot.expiration_date,
+                "alert_date": lot.alert_date,
+                "use_date": lot.use_date,
+                "removal_date": lot.removal_date,
+                "product_id": lot.product_id.id,
+                "product_name": lot.product_id.name,
+            }
+
+            return {"code": 200, "result": response}
+
+        except Exception as e:
+            return {"code": 500, "msg": f"Error interno: {str(e)}"}
+
+
+def procesar_fecha_naive(fecha_transaccion, zona_horaria_cliente):
+    if fecha_transaccion:
+        # Convertir la fecha enviada a datetime y agregar la zona horaria del cliente
+        tz_cliente = pytz.timezone(zona_horaria_cliente)
+        fecha_local = tz_cliente.localize(datetime.strptime(fecha_transaccion, "%Y-%m-%d %H:%M:%S"))
+
+        # Convertir la fecha a UTC
+        fecha_utc = fecha_local.astimezone(pytz.utc)
+
+        # Eliminar la información de la zona horaria (hacerla naive)
+        fecha_naive = fecha_utc.replace(tzinfo=None)
+        return fecha_naive
+    else:
+        # Usar la fecha actual del servidor como naive datetime
+        return datetime.now().replace(tzinfo=None)
