@@ -85,7 +85,10 @@ class TransaccionRecepcionController(http.Controller):
                         "responsable_id": picking.user_id.id or 0,
                         "responsable": picking.user_id.name or "",
                         "picking_type": picking.picking_type_id.name,
+                        "start_time_reception": picking.start_time_reception or "",
+                        "end_time_reception": picking.end_time_reception or "",
                         "lineas_recepcion": [],
+                        "lineas_recepcion_enviadas": [],
                     }
 
                     # ✅ Procesar solo las líneas pendientes
@@ -93,72 +96,124 @@ class TransaccionRecepcionController(http.Controller):
                         product = move.product_id
                         purchase_line = move.purchase_line_id
 
-                        # Obtener códigos de barras adicionales
-                        array_barcodes = []
-                        if "barcode_ids" in product.fields_get():
-                            array_barcodes = [
-                                {
-                                    "barcode": barcode.name,
-                                    "id_move": move.id,
-                                    "id_product": product.id,
-                                    "batch_id": picking.id,
-                                }
-                                for barcode in product.barcode_ids
-                                if barcode.name
-                            ]
+                        quantity_ordered = purchase_line.product_qty if purchase_line else move.product_qty
+                        quantity_done = move.quantity_done
 
-                        # Obtener empaques del producto
-                        array_packing = []
-                        if "packaging_ids" in product.fields_get():
-                            array_packing = [
-                                {
-                                    "barcode": pack.barcode,
-                                    "cantidad": pack.qty,
-                                    "id_move": move.id,
-                                    "id_product": product.id,
-                                }
-                                for pack in product.packaging_ids
-                                if pack.barcode
-                            ]
+                        # ⚠️ Saltar líneas totalmente recepcionadas
+                        if quantity_done < quantity_ordered:
 
-                        # obtener la fecha de vencimiento del producto pero la que esta mas cerca a vencer
-                        if product.tracking == "lot":
-                            lot = request.env["stock.production.lot"].search([("product_id", "=", product.id)], order="expiration_date asc", limit=1)
-                            if lot:
-                                fecha_vencimiento = lot.expiration_date
+                            # Obtener códigos de barras adicionales
+                            array_barcodes = []
+                            if "barcode_ids" in product.fields_get():
+                                array_barcodes = [
+                                    {
+                                        "barcode": barcode.name,
+                                        "id_move": move.id,
+                                        "id_product": product.id,
+                                        "batch_id": picking.id,
+                                    }
+                                    for barcode in product.barcode_ids
+                                    if barcode.name
+                                ]
+
+                            # Obtener empaques del producto
+                            array_packing = []
+                            if "packaging_ids" in product.fields_get():
+                                array_packing = [
+                                    {
+                                        "barcode": pack.barcode,
+                                        "cantidad": pack.qty,
+                                        "id_move": move.id,
+                                        "id_product": product.id,
+                                    }
+                                    for pack in product.packaging_ids
+                                    if pack.barcode
+                                ]
+
+                            # obtener la fecha de vencimiento del producto pero la que esta mas cerca a vencer
+                            if product.tracking == "lot":
+                                lot = request.env["stock.production.lot"].search([("product_id", "=", product.id)], order="expiration_date asc", limit=1)
+                                if lot:
+                                    fecha_vencimiento = lot.expiration_date
+                                else:
+                                    fecha_vencimiento = ""
                             else:
                                 fecha_vencimiento = ""
-                        else:
-                            fecha_vencimiento = ""
 
-                        # Generar información de la línea de recepción
-                        linea_info = {
-                            "id": move.id,
-                            "id_move": move.id,
-                            "id_recepcion": picking.id,
-                            "product_id": product.id,
-                            "product_name": product.name,
-                            "product_code": product.default_code or "",
-                            "product_barcode": product.barcode or "",
-                            "product_tracking": product.tracking or "",
-                            "fecha_vencimiento": fecha_vencimiento or "",
-                            "dias_vencimiento": product.expiration_time or "",
-                            "other_barcodes": array_barcodes,
-                            "product_packing": array_packing,
-                            "quantity_ordered": purchase_line.product_qty if purchase_line else move.product_qty,
-                            "quantity_to_receive": move.product_qty,
-                            "quantity_done": move.quantity_done,
-                            "uom": move.product_uom.name if move.product_uom else "UND",
-                            "location_dest_id": move.location_dest_id.id or 0,
-                            "location_dest_name": move.location_dest_id.display_name or "",
-                            "location_dest_barcode": move.location_dest_id.barcode or "",
-                            "location_id": move.location_id.id or 0,
-                            "location_name": move.location_id.display_name or "",
-                            "location_barcode": move.location_id.barcode or "",
-                            "weight": product.weight or 0,
-                        }
+                            # Generar información de la línea de recepción
+                            linea_info = {
+                                "id": move.id,
+                                "id_move": move.id,
+                                "id_recepcion": picking.id,
+                                "product_id": product.id,
+                                "product_name": product.name,
+                                "product_code": product.default_code or "",
+                                "product_barcode": product.barcode or "",
+                                "product_tracking": product.tracking or "",
+                                "fecha_vencimiento": fecha_vencimiento or "",
+                                "dias_vencimiento": product.expiration_time or "",
+                                "other_barcodes": array_barcodes,
+                                "product_packing": array_packing,
+                                "quantity_ordered": purchase_line.product_qty if purchase_line else move.product_qty,
+                                "quantity_to_receive": move.product_qty,
+                                "quantity_done": move.quantity_done,
+                                "uom": move.product_uom.name if move.product_uom else "UND",
+                                "location_dest_id": move.location_dest_id.id or 0,
+                                "location_dest_name": move.location_dest_id.display_name or "",
+                                "location_dest_barcode": move.location_dest_id.barcode or "",
+                                "location_id": move.location_id.id or 0,
+                                "location_name": move.location_id.display_name or "",
+                                "location_barcode": move.location_id.barcode or "",
+                                "weight": product.weight or 0,
+                            }
 
-                        recepcion_info["lineas_recepcion"].append(linea_info)
+                            recepcion_info["lineas_recepcion"].append(linea_info)
+
+                        # ✅ Agregar las líneas de move_line que tengan is_done_item en True
+                        move_lines_done = move.move_line_ids.filtered(lambda ml: ml.is_done_item)
+                        for move_line in move_lines_done:
+                            # Crear información de la línea enviada
+                            linea_enviada_info = {
+                                "id": move_line.id,
+                                "id_move_line": move_line.id,
+                                "id_move": move.id,
+                                "id_recepcion": picking.id,
+                                "product_id": product.id,
+                                "product_name": product.name,
+                                "product_code": product.default_code or "",
+                                "product_barcode": product.barcode or "",
+                                "product_tracking": product.tracking or "",
+                                "quantity_ordered": purchase_line.product_qty if purchase_line else move.product_qty,
+                                "quantity_to_receive": move.product_qty,
+                                "quantity_done": move_line.qty_done,
+                                "uom": move_line.product_uom_id.name if move_line.product_uom_id else "UND",
+                                "location_dest_id": move_line.location_dest_id.id or 0,
+                                "location_dest_name": move_line.location_dest_id.display_name or "",
+                                "location_dest_barcode": move_line.location_dest_id.barcode or "",
+                                "location_id": move_line.location_id.id or 0,
+                                "location_name": move_line.location_id.display_name or "",
+                                "location_barcode": move_line.location_id.barcode or "",
+                            }
+
+                            # Agregar información del lote si existe
+                            if move_line.lot_id:
+                                linea_enviada_info.update(
+                                    {
+                                        "lot_id": move_line.lot_id.id,
+                                        "lot_name": move_line.lot_id.name,
+                                        "fecha_vencimiento": move_line.lot_id.expiration_date or "",
+                                    }
+                                )
+                            elif move_line.lot_name:
+                                linea_enviada_info.update(
+                                    {
+                                        "lot_id": 0,
+                                        "lot_name": move_line.lot_name,
+                                        "fecha_vencimiento": "",
+                                    }
+                                )
+
+                            recepcion_info["lineas_recepcion_enviadas"].append(linea_enviada_info)
 
                     # Solo añadir recepciones que tengan líneas pendientes
                     if recepcion_info["lineas_recepcion"]:
@@ -581,7 +636,6 @@ class TransaccionRecepcionController(http.Controller):
         except Exception as e:
             return {"code": 500, "msg": f"Error interno: {str(e)}"}
 
-
     @http.route("/api/complete_recepcion", auth="user", type="json", methods=["POST"], csrf=False)
     def complete_recepcion(self, **auth):
         try:
@@ -600,9 +654,8 @@ class TransaccionRecepcionController(http.Controller):
             if not recepcion:
                 return {"code": 400, "msg": f"Recepción no encontrada o ya completada con ID {id_recepcion}"}
 
-            # Llamar a button_validate para intentar la validación
-            # Esto puede devolver un wizard si la recepción está incompleta
-            result = recepcion.sudo().with_context(skip_backorder=not crear_backorder).button_validate()
+            # Intentar validar la recepción
+            result = recepcion.sudo().button_validate()
 
             # Si el resultado es un diccionario, significa que se requiere acción adicional (un wizard)
             if isinstance(result, dict) and result.get("res_model"):
@@ -610,30 +663,26 @@ class TransaccionRecepcionController(http.Controller):
 
                 # Para asistente de backorder
                 if wizard_model == "stock.backorder.confirmation":
-                    wizard_id = result.get("res_id") or False
+                    # Crear el wizard con los valores del contexto
+                    wizard_context = result.get("context", {})
 
-                    # Si no hay ID, necesitamos crear el wizard
-                    if not wizard_id:
-                        wizard = request.env[wizard_model].sudo().create({"pick_ids": [(4, recepcion.id)]})
-                    else:
-                        wizard = request.env[wizard_model].sudo().browse(wizard_id)
+                    # Crear el asistente con los valores correctos según tu JSON
+                    wizard_vals = {"pick_ids": [(4, id_recepcion)], "show_transfers": wizard_context.get("default_show_transfers", False)}  # Enlazar con la recepción actual
 
-                    # Procesamos según la opción de crear_backorder
+                    wizard = request.env[wizard_model].sudo().with_context(**wizard_context).create(wizard_vals)
+
+                    # Procesar según la opción de crear_backorder
                     if crear_backorder:
                         wizard.sudo().process()
-                        return {"code": 200, "msg": "Recepción parcial completada y backorder creado"}
+                        return {"code": 200, "msg": f"Recepción parcial completada y backorder creado - ID {wizard.id or 0}"}
                     else:
                         wizard.sudo().process_cancel_backorder()
                         return {"code": 200, "msg": "Recepción parcial completada sin crear backorder"}
 
                 # Para asistente de transferencia inmediata
                 elif wizard_model == "stock.immediate.transfer":
-                    wizard_id = result.get("res_id") or False
-
-                    if not wizard_id:
-                        wizard = request.env[wizard_model].sudo().create({"pick_ids": [(4, recepcion.id)]})
-                    else:
-                        wizard = request.env[wizard_model].sudo().browse(wizard_id)
+                    wizard_context = result.get("context", {})
+                    wizard = request.env[wizard_model].sudo().with_context(**wizard_context).create({"pick_ids": [(4, id_recepcion)]})
 
                     wizard.sudo().process()
                     return {"code": 200, "msg": "Recepción procesada con transferencia inmediata"}
@@ -685,6 +734,7 @@ class TransaccionRecepcionController(http.Controller):
                     {
                         "name": nombre_lote,
                         "product_id": product.id,
+                        "company_id": product.company_id.id or user.company_id.id,  # Añadir company_id
                         "expiration_date": fecha_vencimiento,
                         "alert_date": fecha_vencimiento,
                         "use_date": fecha_vencimiento,
