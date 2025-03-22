@@ -193,6 +193,11 @@ class TransaccionRecepcionController(http.Controller):
                                 "location_id": move_line.location_id.id or 0,
                                 "location_name": move_line.location_id.display_name or "",
                                 "location_barcode": move_line.location_id.barcode or "",
+                                "is_done_item": move_line.is_done_item,
+                                "date_transaction": move_line.date_transaction or "",
+                                "new_observation": move_line.new_observation or "",
+                                "time": move_line.time or "",
+                                "user_operator_id": move_line.user_operator_id.id or 0,
                             }
 
                             # Agregar información del lote si existe
