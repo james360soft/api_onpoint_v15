@@ -35,6 +35,7 @@ class TransaccionTransferenciasController(http.Controller):
                             ("state", "=", "assigned"),
                             ("picking_type_code", "=", "internal"),  # Transferencia interna
                             ("picking_type_id.warehouse_id", "=", warehouse.id),
+                            ("sequence_code", "=", "INT"),  # Transferencia interna
                             "|",  # <- OR lógico para incluir ambos casos
                             ("user_id", "=", user.id),  # Transferencias asignadas al usuario actual
                             ("user_id", "=", False),  # Transferencias sin responsable asignado
@@ -188,25 +189,25 @@ class TransaccionTransferenciasController(http.Controller):
             # ✅ Verificar si la transferencia existe
             if not transferencia:
                 return {"code": 404, "msg": "Transferencia no encontrada"}
-                
+
             # ✅ Verificar si el usuario tiene acceso al almacén de esta transferencia
             warehouse = transferencia.picking_type_id.warehouse_id
             if warehouse not in user.allowed_warehouse_ids:
                 return {"code": 403, "msg": "No tienes permisos para acceder a esta transferencia"}
-                
+
             # ✅ Verificar si hay movimientos pendientes
             movimientos_pendientes = transferencia.move_lines.mapped("move_line_ids").filtered(lambda ml: ml.state == "assigned")
-            
+
             # Si no hay movimientos pendientes, devolver mensaje apropiado
             if not movimientos_pendientes:
                 return {"code": 404, "msg": "No hay líneas de transferencia pendientes"}
-                
+
             # Calcular peso total
             peso_total = sum(move.product_id.weight * move.qty_done for move in movimientos_pendientes if move.product_id.weight)
-            
+
             # Calcular número de ítems (suma total de cantidades)
             numero_items = sum(move.qty_done for move in movimientos_pendientes)
-            
+
             transferencia_info = {
                 "id": transferencia.id,
                 "name": transferencia.name,
@@ -230,11 +231,11 @@ class TransaccionTransferenciasController(http.Controller):
                 "lineas_transferencia": [],
                 "lineas_transferencia_enviadas": [],
             }
-            
+
             # ✅ Procesar las líneas de movimiento
             for move_line in movimientos_pendientes:
                 product = move_line.product_id
-                
+
                 # Obtener códigos de barras adicionales
                 array_barcodes = []
                 if "barcode_ids" in product.fields_get():
@@ -248,7 +249,7 @@ class TransaccionTransferenciasController(http.Controller):
                         for barcode in product.barcode_ids
                         if barcode.name
                     ]
-                    
+
                 # Obtener empaques del producto
                 array_packing = []
                 if "packaging_ids" in product.fields_get():
@@ -263,7 +264,7 @@ class TransaccionTransferenciasController(http.Controller):
                         for pack in product.packaging_ids
                         if pack.barcode
                     ]
-                    
+
                 # Generar la información de la línea
                 linea_info = {
                     "id": move_line.id,
@@ -289,35 +290,38 @@ class TransaccionTransferenciasController(http.Controller):
                     "location_barcode": move_line.location_id.barcode or "",
                     "weight": product.weight or 0,
                 }
-                
+
                 # Añadir información específica del lote
                 if move_line.lot_id:
-                    linea_info.update({
-                        "lot_id": move_line.lot_id.id,
-                        "lot_name": move_line.lot_id.name,
-                        "fecha_vencimiento": move_line.lot_id.expiration_date or "",
-                    })
+                    linea_info.update(
+                        {
+                            "lot_id": move_line.lot_id.id,
+                            "lot_name": move_line.lot_id.name,
+                            "fecha_vencimiento": move_line.lot_id.expiration_date or "",
+                        }
+                    )
                 else:
-                    linea_info.update({
-                        "lot_id": 0,
-                        "lot_name": "",
-                        "fecha_vencimiento": "",
-                    })
-                    
+                    linea_info.update(
+                        {
+                            "lot_id": 0,
+                            "lot_name": "",
+                            "fecha_vencimiento": "",
+                        }
+                    )
+
                 # Determinar a qué lista añadir la línea según is_done_item
                 if hasattr(move_line, "is_done_item") and move_line.is_done_item:
                     transferencia_info["lineas_transferencia_enviadas"].append(linea_info)
                 else:
                     transferencia_info["lineas_transferencia"].append(linea_info)
-                    
+
             return {"code": 200, "result": transferencia_info}
-            
+
         except AccessError as e:
             return {"code": 403, "msg": f"Acceso denegado: {str(e)}"}
         except Exception as err:
             return {"code": 400, "msg": f"Error inesperado: {str(err)}"}
-            
-            
+
     ## POST enviar transferencia
     # @http.route("/api/send_tranferencia", auth="user", type="json", methods=["POST"], csrf=False)
     # def send_tranferencia(self, **auth):
@@ -327,7 +331,7 @@ class TransaccionTransferenciasController(http.Controller):
     #         # ✅ Validar usuario
     #         if not user:
     #             return {"code": 400, "msg": "Usuario no encontrado"}
-            
+
     #         id_transferencia = auth.get("id_transferencia", 0)
     #         list_items = auth.get("list_items", [])
 
@@ -337,7 +341,7 @@ class TransaccionTransferenciasController(http.Controller):
     #         # ✅ Verificar si la transferencia existe
     #         if not transferencia:
     #             return {"code": 404, "msg": "Transferencia no encontrada"}
-            
+
     #         array_result = []
 
     #         for item in list_items:
@@ -353,8 +357,3 @@ class TransaccionTransferenciasController(http.Controller):
 
     #             # ✅ Buscar el movimiento por ID
     #             move = request.env["stock.move"].sudo().search([("id", "=", move_id)])
-
-                
-
-
-
