@@ -69,8 +69,8 @@ class TransaccionTransferenciasController(http.Controller):
                         "location_dest_name": picking.location_dest_id.display_name,  # Ubicación destino
                         "numero_transferencia": picking.name,  # Número de transferencia
                         "peso_total": peso_total,  # Peso total
-                        "numero_lineas": len(movimientos_pendientes),  # Número de líneas (productos)
-                        "numero_items": numero_items,  # Número de ítems (cantidades)
+                        "numero_lineas": 0,  # Número de líneas (productos)
+                        "numero_items": 0,  # Número de ítems (cantidades)
                         "state": picking.state,
                         "origin": picking.origin or "",
                         "priority": picking.priority,
@@ -171,6 +171,8 @@ class TransaccionTransferenciasController(http.Controller):
                         else:
                             transferencia_info["lineas_transferencia"].append(linea_info)
 
+                    transferencia_info["numero_lineas"] = len(transferencia_info["lineas_transferencia"])
+                    transferencia_info["numero_items"] = sum(linea["quantity_to_transfer"] for linea in transferencia_info["lineas_transferencia"])
                     array_transferencias.append(transferencia_info)
 
             return {"code": 200, "result": array_transferencias}
