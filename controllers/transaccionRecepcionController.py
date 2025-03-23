@@ -73,8 +73,8 @@ class TransaccionRecepcionController(http.Controller):
                         "purchase_order_name": purchase_order.name if purchase_order else "",  # Orden de compra
                         "numero_entrada": picking.name,  # Número de entrada
                         "peso_total": peso_total,  # Peso total
-                        "numero_lineas": len(movimientos_pendientes),  # Número de líneas (productos)
-                        "numero_items": numero_items,  # Número de ítems (cantidades)
+                        "numero_lineas": 0,  # Número de líneas (productos)
+                        "numero_items": 0,  # Número de ítems (cantidades)
                         "state": picking.state,
                         "origin": picking.origin or "",
                         "priority": picking.priority,
@@ -222,6 +222,8 @@ class TransaccionRecepcionController(http.Controller):
 
                     # Solo añadir recepciones que tengan líneas pendientes
                     if recepcion_info["lineas_recepcion"]:
+                        recepcion_info["numero_lineas"] = len(recepcion_info["lineas_recepcion"])
+                        recepcion_info["numero_items"] = sum(linea["quantity_to_receive"] for linea in recepcion_info["lineas_recepcion"])
                         array_recepciones.append(recepcion_info)
 
             return {"code": 200, "result": array_recepciones}
