@@ -195,7 +195,7 @@ class TransaccionRecepcionController(http.Controller):
                                 "location_barcode": move_line.location_id.barcode or "",
                                 "is_done_item": move_line.is_done_item,
                                 "date_transaction": move_line.date_transaction or "",
-                                "new_observation": move_line.new_observation or "",
+                                "observation": move_line.new_observation or "",
                                 "time": move_line.time or "",
                                 "user_operator_id": move_line.user_operator_id.id or 0,
                             }

@@ -1,3 +1,4 @@
+import logging
 from odoo import http
 from odoo.http import request
 from odoo.exceptions import AccessError
@@ -35,7 +36,7 @@ class TransaccionTransferenciasController(http.Controller):
                             ("state", "=", "assigned"),
                             ("picking_type_code", "=", "internal"),  # Transferencia interna
                             ("picking_type_id.warehouse_id", "=", warehouse.id),
-                            ("sequence_code", "=", "INT"),  # Transferencia interna
+                            ("picking_type_id.sequence_code", "=", "INT"),  # Transferencia interna
                             "|",  # <- OR lógico para incluir ambos casos
                             ("user_id", "=", user.id),  # Transferencias asignadas al usuario actual
                             ("user_id", "=", False),  # Transferencias sin responsable asignado
@@ -45,7 +46,8 @@ class TransaccionTransferenciasController(http.Controller):
 
                 for picking in transferencias_pendientes:
                     # Verificar si hay movimientos pendientes - CORREGIDO AQUÍ
-                    movimientos_pendientes = picking.move_lines.mapped("move_line_ids").filtered(lambda ml: ml.state == "assigned")
+                    # movimientos_pendientes = picking.move_lines.mapped("move_line_ids").filtered(lambda ml: ml.state == "assigned")
+                    movimientos_pendientes = picking.move_lines.mapped("move_line_ids")
 
                     # Si no hay movimientos pendientes, omitir esta transferencia
                     if not movimientos_pendientes:
@@ -77,6 +79,10 @@ class TransaccionTransferenciasController(http.Controller):
                         "responsable_id": picking.user_id.id or 0,
                         "responsable": picking.user_id.name or "",
                         "picking_type": picking.picking_type_id.name,
+                        "start_time_transfer": picking.start_time_transfer or "",
+                        "end_time_transfer": picking.end_time_transfer or "",
+                        "backorder_id": picking.backorder_id.id or 0,
+                        "backorder_name": picking.backorder_id.name or "",
                         "lineas_transferencia": [],  # Líneas pendientes (is_done_item = False)
                         "lineas_transferencia_enviadas": [],  # Líneas procesadas (is_done_item = True)
                     }
@@ -117,7 +123,7 @@ class TransaccionTransferenciasController(http.Controller):
                         # Generar la información base común para todas las líneas
                         linea_info = {
                             "id": move_line.id,
-                            "id_move": move_line.move_id.id,
+                            "id_move": move_line.id,
                             "id_transferencia": picking.id,
                             "product_id": product.id,
                             "product_name": product.name,
@@ -127,7 +133,7 @@ class TransaccionTransferenciasController(http.Controller):
                             "dias_vencimiento": product.expiration_time or "",
                             "other_barcodes": array_barcodes,
                             "product_packing": array_packing,
-                            "quantity_ordered": move_line.move_id.product_qty,
+                            "quantity_ordered": move_line.product_qty,
                             "quantity_to_transfer": move_line.product_qty,
                             "quantity_done": move_line.qty_done,
                             "uom": move_line.product_uom_id.name if move_line.product_uom_id else "UND",
@@ -138,6 +144,7 @@ class TransaccionTransferenciasController(http.Controller):
                             "location_name": move_line.location_id.display_name or "",
                             "location_barcode": move_line.location_id.barcode or "",
                             "weight": product.weight or 0,
+                            "is_done_item": move_line.is_done_item,
                         }
 
                         # Añadir información específica del lote
@@ -322,38 +329,295 @@ class TransaccionTransferenciasController(http.Controller):
         except Exception as err:
             return {"code": 400, "msg": f"Error inesperado: {str(err)}"}
 
-    ## POST enviar transferencia
-    # @http.route("/api/send_tranferencia", auth="user", type="json", methods=["POST"], csrf=False)
-    # def send_tranferencia(self, **auth):
-    #     try:
-    #         user = request.env.user
+    ## POST Asignar responsable a transferencia
+    @http.route("/api/transferencias/asignar", auth="user", type="json", methods=["POST"], csrf=False)
+    def asignar_responsable_transferencia(self, **auth):
+        try:
+            user = request.env.user
 
-    #         # ✅ Validar usuario
-    #         if not user:
-    #             return {"code": 400, "msg": "Usuario no encontrado"}
+            # ✅ Validar usuario
+            if not user:
+                return {"code": 400, "msg": "Usuario no encontrado"}
 
-    #         id_transferencia = auth.get("id_transferencia", 0)
-    #         list_items = auth.get("list_items", [])
+            id_tranfer = auth.get("id_transferencia", 0)
+            id_responsable = auth.get("id_responsable", 0)
 
-    #         # ✅ Buscar la transferencia por ID
-    #         transferencia = request.env["stock.picking"].sudo().search([("id", "=", id_transferencia)])
+            # ✅ Buscar la transferencia por ID
+            transferencia = request.env["stock.picking"].sudo().search([("id", "=", id_tranfer)])
 
-    #         # ✅ Verificar si la transferencia existe
-    #         if not transferencia:
-    #             return {"code": 404, "msg": "Transferencia no encontrada"}
+            # ✅ Verificar si la transferencia existe
+            if not transferencia:
+                return {"code": 404, "msg": "Transferencia no encontrada"}
 
-    #         array_result = []
+            if transferencia.user_id:
+                return {"code": 400, "msg": "La transferencia ya tiene un responsable asignado"}
 
-    #         for item in list_items:
-    #             move_id = item.get("id_move")
-    #             product_id = item.get("id_producto")
-    #             lote_id = item.get("lote_producto")
-    #             ubicacion_destino = item.get("ubicacion_destino")
-    #             cantidad = item.get("cantidad_separada")
-    #             fecha_transaccion = item.get("fecha_transaccion")
-    #             observacion = item.get("observacion")
-    #             id_operario = item.get("id_operario")
-    #             time_line = item.get("time_line")
+            # ✅ Buscar el usuario responsable
+            responsable = request.env["res.users"].sudo().search([("id", "=", id_responsable)])
 
-    #             # ✅ Buscar el movimiento por ID
-    #             move = request.env["stock.move"].sudo().search([("id", "=", move_id)])
+            # ✅ Verificar si el usuario responsable existe
+            if not responsable:
+                return {"code": 404, "msg": "Usuario responsable no encontrado"}
+
+            try:
+                transferencia.write({"user_id": id_responsable})
+
+                return {"code": 200, "msg": "Responsable asignado correctamente"}
+
+            except Exception as err:
+                return {"code": 400, "msg": f"Error al asignar responsable: {str(err)}"}
+
+        except AccessError as e:
+            return {"code": 403, "msg": f"Acceso denegado: {str(e)}"}
+        except Exception as err:
+            return {"code": 400, "msg": f"Error inesperado: {str(err)}"}
+
+    ## POST Enviar cantidad de producto en transferencia
+
+    @http.route("/api/send_transfer", auth="user", type="json", methods=["POST"], csrf=False)
+    def send_transfer(self, **auth):
+        try:
+            user = request.env.user
+
+            # ✅ Validar usuario
+            if not user:
+                return {"code": 400, "msg": "Usuario no encontrado"}
+
+            id_transferencia = auth.get("id_transferencia", 0)
+            list_items = auth.get("list_items", [])
+
+            # ✅ Buscar la transferencia por ID
+            transferencia = request.env["stock.picking"].sudo().search([("id", "=", id_transferencia)])
+
+            # ✅ Verificar si la transferencia existe
+            if not transferencia:
+                return {"code": 404, "msg": "Transferencia no encontrada"}
+
+            array_result = []
+
+            # Agrupar items por id_move para detectar divisiones
+            moves_dict = {}
+            for item in list_items:
+                id_move = item.get("id_move")
+                if id_move in moves_dict:
+                    moves_dict[id_move].append(item)
+                else:
+                    moves_dict[id_move] = [item]
+
+            for id_move, items in moves_dict.items():
+                # ✅ Buscar el movimiento por ID
+                original_move = request.env["stock.move.line"].sudo().search([("id", "=", id_move)])
+
+                # ✅ Verificar si el movimiento existe
+                if not original_move:
+                    return {"code": 404, "msg": f"Movimiento no encontrado (ID: {id_move})"}
+
+                # Calcular la cantidad total enviada para este movimiento
+                total_qty = sum(item.get("cantidad_enviada", 0) for item in items)
+
+                # Verificar que la cantidad total no exceda la cantidad reservada
+                if total_qty > original_move.product_uom_qty:
+                    return {"code": 400, "msg": f"La cantidad total enviada ({total_qty}) excede la cantidad reservada ({original_move.product_uom_qty})"}
+
+                # Procesar el primer item actualizando la línea original
+                first_item = items[0]
+                id_product = first_item.get("id_producto")
+                cantidad_enviada = first_item.get("cantidad_enviada", 0)
+                id_ubicacion_destino = first_item.get("id_ubicacion_destino", 0)
+                id_ubicacion_origen = first_item.get("id_ubicacion_origen", 0)
+                id_lote = first_item.get("id_lote", 0)
+                id_operario = first_item.get("id_operario")
+                fecha_transaccion = first_item.get("fecha_transaccion", "")
+                time_line = int(first_item.get("time_line", 0))
+                novedad = first_item.get("observacion", "")
+
+                # ✅ Buscar el producto por ID
+                product = request.env["product.product"].sudo().search([("id", "=", id_product)])
+
+                # ✅ Verificar si el producto maneja lote
+                if product.tracking == "lot" and not id_lote:
+                    return {"code": 400, "msg": "El producto requiere lote y no se ha proporcionado uno"}
+
+                # Actualizar el movimiento original
+                update_values = {
+                    "qty_done": cantidad_enviada,
+                    "location_dest_id": id_ubicacion_destino,
+                    "location_id": id_ubicacion_origen,
+                    "is_done_item": True,
+                    "date_transaction": procesar_fecha_naive(fecha_transaccion, "America/Bogota") if fecha_transaccion else datetime.now(pytz.utc),
+                    "new_observation": novedad,
+                    "time": time_line,
+                    "user_operator_id": id_operario,
+                }
+
+                if id_lote:
+                    update_values.update({"lot_id": id_lote})
+
+                try:
+                    original_move.write(update_values)
+
+                    array_result.append(
+                        {
+                            "id_move": id_move,
+                            "id_transferencia": id_transferencia,
+                            "id_product": original_move.product_id.id,
+                            "qty_done": original_move.qty_done,
+                            "is_done_item": original_move.is_done_item,
+                            "date_transaction": original_move.date_transaction,
+                            "new_observation": original_move.new_observation,
+                            "time_line": original_move.time,
+                            "user_operator_id": original_move.user_operator_id.id,
+                        }
+                    )
+
+                    # Si hay más elementos, crear nuevas líneas de movimiento
+                    if len(items) > 1:
+                        move_parent = original_move.move_id
+
+                        for item in items[1:]:
+                            cantidad = item.get("cantidad_enviada", 0)
+                            ubicacion_destino = item.get("id_ubicacion_destino", 0)
+                            ubicacion_origen = item.get("id_ubicacion_origen", 0)
+                            lote = item.get("id_lote", 0)
+                            operario = item.get("id_operario")
+                            fecha = item.get("fecha_transaccion", "")
+                            tiempo = int(item.get("time_line", 0))
+                            observacion = item.get("observacion", "")
+
+                            # ✅ Verificar si el producto maneja lote
+                            if product.tracking == "lot" and not lote:
+                                return {"code": 400, "msg": "El producto requiere lote y no se ha proporcionado uno"}
+
+                            # Crear nueva línea de movimiento
+                            new_move_values = {
+                                "move_id": move_parent.id,
+                                "product_id": id_product,
+                                "product_uom_id": original_move.product_uom_id.id,
+                                "location_id": ubicacion_origen,
+                                "location_dest_id": ubicacion_destino,
+                                "qty_done": cantidad,
+                                "is_done_item": True,
+                                "date_transaction": procesar_fecha_naive(fecha, "America/Bogota") if fecha else datetime.now(pytz.utc),
+                                "new_observation": observacion,
+                                "time": tiempo,
+                                "user_operator_id": operario,
+                                "picking_id": id_transferencia,
+                            }
+
+                            if lote:
+                                new_move_values.update({"lot_id": lote})
+
+                            new_move = request.env["stock.move.line"].sudo().create(new_move_values)
+
+                            array_result.append(
+                                {
+                                    "id_move": new_move.id,
+                                    "id_transferencia": id_transferencia,
+                                    "id_product": new_move.product_id.id,
+                                    "qty_done": new_move.qty_done,
+                                    "is_done_item": new_move.is_done_item,
+                                    "date_transaction": new_move.date_transaction,
+                                    "new_observation": new_move.new_observation,
+                                    "time_line": new_move.time,
+                                    "user_operator_id": new_move.user_operator_id.id,
+                                }
+                            )
+
+                except Exception as err:
+                    return {"code": 400, "msg": f"Error al procesar el movimiento {id_move}: {str(err)}"}
+
+            return {"code": 200, "result": array_result}
+
+        except AccessError as e:
+            return {"code": 403, "msg": f"Acceso denegado: {str(e)}"}
+        except Exception as err:
+            return {"code": 400, "msg": f"Error inesperado: {str(err)}"}
+
+    ## POST Completar transferencia
+    @http.route("/api/complete_transfer", auth="user", type="json", methods=["POST"], csrf=False)
+    def completar_transferencia(self, **auth):
+        try:
+            user = request.env.user
+            # ✅ Validar usuario
+            if not user:
+                return {"code": 400, "msg": "Usuario no encontrado"}
+
+            id_transferencia = auth.get("id_transferencia", 0)
+            crear_backorder = auth.get("crear_backorder", True)
+
+            # ✅ Buscar transferencia por ID
+            transferencia = request.env["stock.picking"].sudo().search([("id", "=", id_transferencia), ("picking_type_code", "=", "internal"), ("picking_type_id.sequence_code", "=", "INT"), ("state", "=", "assigned")], limit=1)
+
+            if not transferencia:
+                return {"code": 404, "msg": f"Transferencia no encontrada o ya completada con ID {id_transferencia}"}
+
+            # Verificar si hay líneas de movimiento que validar
+            if not transferencia.move_ids_without_package:
+                return {"code": 400, "msg": "La transferencia no tiene líneas de movimiento"}
+
+            # Intentar validar la transferencia
+            result = transferencia.with_context(skip_backorder=not crear_backorder).sudo().button_validate()
+            # Si el resultado es un diccionario, significa que se requiere acción adicional (un wizard)
+            if isinstance(result, dict) and result.get("res_model"):
+                wizard_model = result.get("res_model")
+
+                # Para asistente de backorder
+                if wizard_model == "stock.backorder.confirmation":
+                    wizard_context = result.get("context", {})
+
+                    wizard_vals = {"pick_ids": [(6, 0, [transferencia.id])], "show_transfers": wizard_context.get("default_show_transfers", False)}
+
+                    wizard = request.env[wizard_model].sudo().with_context(**wizard_context).create(wizard_vals)
+
+                    # Procesar según la opción de crear_backorder
+                    if crear_backorder:
+                        # En lugar de llamar al método process, vamos a completar la transferencia directamente
+                        transferencia.sudo()._action_done()
+
+                        # Verificar si se creó una backorder
+                        backorder = request.env["stock.picking"].sudo().search([("backorder_id", "=", transferencia.id), ("state", "not in", ["done", "cancel"])], limit=1)
+
+                        return {"code": 200, "msg": "Transferencia procesada directamente", "original_id": transferencia.id, "original_state": transferencia.state, "backorder_id": backorder.id if backorder else False}
+                    else:
+                        transferencia.sudo()._action_done()
+
+                        return {"code": 200, "msg": "Transferencia completada sin backorder", "original_id": transferencia.id, "original_state": transferencia.state}
+
+                # Para asistente de transferencia inmediata
+                elif wizard_model == "stock.immediate.transfer":
+                    wizard_context = result.get("context", {})
+                    wizard = request.env[wizard_model].sudo().with_context(**wizard_context).create({})
+
+                    # En lugar de usar el wizard, completar directamente
+                    transferencia.sudo()._action_done()
+
+                    return {"code": 200, "msg": "Transferencia completada con éxito", "original_id": transferencia.id, "original_state": transferencia.state}
+
+                else:
+                    return {"code": 400, "msg": f"Acción adicional requerida no soportada: {wizard_model}"}
+
+            elif isinstance(result, bool) and result:
+                # Si button_validate retornó True, la transferencia se completó correctamente
+                return {"code": 200, "msg": "Transferencia completada directamente", "original_id": transferencia.id, "original_state": transferencia.state}
+            else:
+                return {"code": 400, "msg": f"No se pudo completar la transferencia: {result}"}
+
+        except Exception as e:
+            return {"code": 500, "msg": f"Error interno: {str(e)}"}
+
+
+def procesar_fecha_naive(fecha_transaccion, zona_horaria_cliente):
+    if fecha_transaccion:
+        # Convertir la fecha enviada a datetime y agregar la zona horaria del cliente
+        tz_cliente = pytz.timezone(zona_horaria_cliente)
+        fecha_local = tz_cliente.localize(datetime.strptime(fecha_transaccion, "%Y-%m-%d %H:%M:%S"))
+
+        # Convertir la fecha a UTC
+        fecha_utc = fecha_local.astimezone(pytz.utc)
+
+        # Eliminar la información de la zona horaria (hacerla naive)
+        fecha_naive = fecha_utc.replace(tzinfo=None)
+        return fecha_naive
+    else:
+        # Usar la fecha actual del servidor como naive datetime
+        return datetime.now().replace(tzinfo=None)
