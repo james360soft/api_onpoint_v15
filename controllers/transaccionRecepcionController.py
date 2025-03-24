@@ -1,3 +1,4 @@
+from re import I
 from odoo import http
 from odoo.http import request
 from odoo.exceptions import AccessError
@@ -19,10 +20,12 @@ class TransaccionRecepcionController(http.Controller):
 
             array_recepciones = []
 
-            # ✅ Verificar si el usuario tiene almacenes permitidos
-            allowed_warehouses = user.allowed_warehouse_ids
-            if not allowed_warehouses:
-                return {"code": 400, "msg": "El usuario no tiene acceso a ningún almacén"}
+            # Obtener almacenes del usuario
+            allowed_warehouses = obtener_almacenes_usuario(user)
+
+            # Verificar si es un error (diccionario con código y mensaje)
+            if isinstance(allowed_warehouses, dict) and "code" in allowed_warehouses:
+                return allowed_warehouses  # Devolver el error directamente
 
             # ✅ Obtener recepciones pendientes directamente de los almacenes permitidos
             for warehouse in allowed_warehouses:
@@ -253,10 +256,6 @@ class TransaccionRecepcionController(http.Controller):
             # ✅ Validar recepción
             if not recepcion:
                 return {"code": 400, "msg": "Recepción no encontrada"}
-
-            # ✅ Verificar si el usuario tiene acceso al almacén de la recepción
-            if not user.has_group("stock.group_stock_manager") and user.allowed_warehouse_ids and recepcion.picking_type_id.warehouse_id not in user.allowed_warehouse_ids:
-                return {"code": 403, "msg": "Acceso denegado"}
 
             # ✅ Verificar si la recepción tiene movimientos pendientes
             movimientos_pendientes = recepcion.move_lines.filtered(lambda m: m.state not in ["done", "cancel"])
@@ -617,26 +616,33 @@ class TransaccionRecepcionController(http.Controller):
     def get_ubicaciones(self):
         try:
             user = request.env.user
-
             # ✅ Validar usuario
             if not user:
                 return {"code": 400, "msg": "Usuario no encontrado"}
 
-            # ✅ Obtener todas las ubicaciones
-            ubicaciones = request.env["stock.location"].sudo().search(["&", ("usage", "=", "internal"), ("active", "=", True)])
+            # Obtener almacenes del usuario
+            allowed_warehouses = obtener_almacenes_usuario(user)
+
+            # Verificar si es un error (diccionario con código y mensaje)
+            if isinstance(allowed_warehouses, dict) and "code" in allowed_warehouses:
+                return allowed_warehouses  # Devolver el error directamente
 
             array_ubicaciones = []
 
-            for ubicacion in ubicaciones:
-                array_ubicaciones.append(
-                    {
-                        "id": ubicacion.id,
-                        "name": ubicacion.display_name,
-                        "barcode": ubicacion.barcode or "",
-                        "location_id": ubicacion.location_id.id if ubicacion.location_id else 0,
-                        "location_name": ubicacion.location_id.display_name if ubicacion.location_id else "",
-                    }
-                )
+            for warehouse in allowed_warehouses:
+                # ✅ Obtener todas las ubicaciones
+                ubicaciones = request.env["stock.location"].sudo().search([("usage", "=", "internal"), ("active", "=", True), ("warehouse_id", "=", warehouse.id)])
+
+                for ubicacion in ubicaciones:
+                    array_ubicaciones.append(
+                        {
+                            "id": ubicacion.id,
+                            "name": ubicacion.display_name,
+                            "barcode": ubicacion.barcode or "",
+                            "location_id": ubicacion.location_id.id if ubicacion.location_id else 0,
+                            "location_name": ubicacion.location_id.display_name if ubicacion.location_id else "",
+                        }
+                    )
 
             return {"code": 200, "result": array_ubicaciones}
 
@@ -840,3 +846,21 @@ def procesar_fecha_naive(fecha_transaccion, zona_horaria_cliente):
     else:
         # Usar la fecha actual del servidor como naive datetime
         return datetime.now().replace(tzinfo=None)
+
+
+def obtener_almacenes_usuario(user):
+
+    user_wms = request.env["appwms.users_wms"].sudo().search([("user_id", "=", user.id)], limit=1)
+
+    if not user_wms:
+        return {
+            "code": 401,
+            "msg": "El usuario no tiene permisos o no esta registrado en el módulo de configuraciones en el WMS",
+        }
+
+    allowed_warehouses = user_wms.allowed_warehouse_ids
+
+    if not allowed_warehouses:
+        return {"code": 400, "msg": "El usuario no tiene acceso a ningún almacén"}
+
+    return allowed_warehouses

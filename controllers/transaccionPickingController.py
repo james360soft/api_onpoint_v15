@@ -347,9 +347,9 @@ class TransaccionDataPicking(http.Controller):
                         "quantity": move["product_uom_qty"],
                         "quantity_done": move["qty_done"],
                         "fecha_transaccion": move["date_transaction_picking"] or "",
-                        "observation" : move["new_observation"] or "",
-                        "time_line" : move["time"] or "",
-                        "operator_id" : move["user_operator_id"][0] if move["user_operator_id"] else 0,
+                        "observation": move["new_observation"] or "",
+                        "time_line": move["time"] or "",
+                        "operator_id": move["user_operator_id"][0] if move["user_operator_id"] else 0,
                         "done_item": move["is_done_item"],
                         "barcode": product.barcode,
                         "other_barcode": array_all_barcode,
@@ -445,7 +445,7 @@ class TransaccionDataPicking(http.Controller):
             if "unsupported XML-RPC protocol" in str(err):
                 return {"code": 400, "msg": "Indicar protocolo http o https de url_rpc"}
             return {"code": 400, "msg": f"Error inesperado: {str(err)}"}
-        
+
     ## GET Transacciones batchs realizadas por usuario
     @http.route("/api/batchs_done", auth="user", type="json", methods=["GET"])
     def get_batches_done(self, **auth):
@@ -455,7 +455,7 @@ class TransaccionDataPicking(http.Controller):
             # ✅ Validar usuario autenticado
             if not user:
                 return {"code": 401, "msg": "Usuario no autenticado"}
-            
+
             fecha_batch = auth.get("fecha_batch", datetime.now().strftime("%Y-%m-%d"))
 
             # ✅ Obtener estrategia de picking
@@ -545,3 +545,21 @@ def procesar_fecha_naive(fecha_transaccion, zona_horaria_cliente):
     else:
         # Usar la fecha actual del servidor como naive datetime
         return datetime.now().replace(tzinfo=None)
+
+
+def obtener_almacenes_usuario(user):
+
+    user_wms = request.env["appwms.users_wms"].sudo().search([("user_id", "=", user.id)], limit=1)
+
+    if not user_wms:
+        return {
+            "code": 401,
+            "msg": "El usuario no tiene permisos o no esta registrado en el módulo de configuraciones en el WMS",
+        }
+
+    allowed_warehouses = user_wms.allowed_warehouse_ids
+
+    if not allowed_warehouses:
+        return {"code": 400, "msg": "El usuario no tiene acceso a ningún almacén"}
+
+    return allowed_warehouses
