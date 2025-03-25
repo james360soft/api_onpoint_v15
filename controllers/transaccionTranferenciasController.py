@@ -376,92 +376,114 @@ class TransaccionTransferenciasController(http.Controller):
             return {"code": 400, "msg": f"Error inesperado: {str(err)}"}
 
     ## POST Enviar cantidad de producto en transferencia
-
     @http.route("/api/send_transfer", auth="user", type="json", methods=["POST"], csrf=False)
     def send_transfer(self, **auth):
         try:
             user = request.env.user
 
-            # ✅ Validar usuario
             if not user:
                 return {"code": 400, "msg": "Usuario no encontrado"}
 
             id_transferencia = auth.get("id_transferencia", 0)
             list_items = auth.get("list_items", [])
 
-            # ✅ Buscar la transferencia por ID
             transferencia = request.env["stock.picking"].sudo().search([("id", "=", id_transferencia)])
 
-            # ✅ Verificar si la transferencia existe
             if not transferencia:
                 return {"code": 404, "msg": "Transferencia no encontrada"}
 
             array_result = []
 
-            # Agrupar items por id_move para detectar divisiones
-            moves_dict = {}
             for item in list_items:
                 id_move = item.get("id_move")
-                if id_move in moves_dict:
-                    moves_dict[id_move].append(item)
-                else:
-                    moves_dict[id_move] = [item]
+                id_product = item.get("id_producto")
+                cantidad_enviada = item.get("cantidad_enviada", 0)
+                id_ubicacion_destino = item.get("id_ubicacion_destino", 0)
+                id_ubicacion_origen = item.get("id_ubicacion_origen", 0)
+                id_lote = item.get("id_lote", 0)
+                id_operario = item.get("id_operario")
+                fecha_transaccion = item.get("fecha_transaccion", "")
+                time_line = int(item.get("time_line", 0))
+                novedad = item.get("observacion", "")
+                dividida = item.get("dividida", False)
 
-            for id_move, items in moves_dict.items():
-                # ✅ Buscar el movimiento por ID
+                # Buscar movimiento original
                 original_move = request.env["stock.move.line"].sudo().search([("id", "=", id_move)])
-
-                # ✅ Verificar si el movimiento existe
                 if not original_move:
                     return {"code": 404, "msg": f"Movimiento no encontrado (ID: {id_move})"}
 
-                # Calcular la cantidad total enviada para este movimiento
-                total_qty = sum(item.get("cantidad_enviada", 0) for item in items)
+                move_parent = original_move.move_id
 
-                # Verificar que la cantidad total no exceda la cantidad reservada
-                if total_qty > original_move.product_uom_qty:
-                    return {"code": 400, "msg": f"La cantidad total enviada ({total_qty}) excede la cantidad reservada ({original_move.product_uom_qty})"}
-
-                # Procesar el primer item actualizando la línea original
-                first_item = items[0]
-                id_product = first_item.get("id_producto")
-                cantidad_enviada = first_item.get("cantidad_enviada", 0)
-                id_ubicacion_destino = first_item.get("id_ubicacion_destino", 0)
-                id_ubicacion_origen = first_item.get("id_ubicacion_origen", 0)
-                id_lote = first_item.get("id_lote", 0)
-                id_operario = first_item.get("id_operario")
-                fecha_transaccion = first_item.get("fecha_transaccion", "")
-                time_line = int(first_item.get("time_line", 0))
-                novedad = first_item.get("observacion", "")
-
-                # ✅ Buscar el producto por ID
+                # Buscar producto
                 product = request.env["product.product"].sudo().search([("id", "=", id_product)])
 
-                # ✅ Verificar si el producto maneja lote
                 if product.tracking == "lot" and not id_lote:
                     return {"code": 400, "msg": "El producto requiere lote y no se ha proporcionado uno"}
 
-                # Actualizar el movimiento original
-                update_values = {
-                    "qty_done": cantidad_enviada,
-                    "location_dest_id": id_ubicacion_destino,
-                    "location_id": id_ubicacion_origen,
-                    "is_done_item": True,
-                    "date_transaction": procesar_fecha_naive(fecha_transaccion, "America/Bogota") if fecha_transaccion else datetime.now(pytz.utc),
-                    "new_observation": novedad,
-                    "time": time_line,
-                    "user_operator_id": id_operario,
-                }
+                # Validar cantidad total enviada
+                move_lines = request.env["stock.move.line"].sudo().search([("move_id", "=", move_parent.id)])
+                qty_total_enviada = sum(ml.qty_done for ml in move_lines)
 
-                if id_lote:
-                    update_values.update({"lot_id": id_lote})
+                if qty_total_enviada + cantidad_enviada > move_parent.product_uom_qty:
+                    return {"code": 400, "msg": f"La cantidad total enviada ({qty_total_enviada + cantidad_enviada}) excede la cantidad reservada ({move_parent.product_uom_qty})"}
 
-                try:
+                fecha = procesar_fecha_naive(fecha_transaccion, "America/Bogota") if fecha_transaccion else datetime.now(pytz.utc)
+
+                if dividida:
+                    # Crear nueva línea
+                    new_move_values = {
+                        "move_id": move_parent.id,
+                        "product_id": id_product,
+                        "product_uom_id": original_move.product_uom_id.id,
+                        "location_id": id_ubicacion_origen,
+                        "location_dest_id": id_ubicacion_destino,
+                        "qty_done": cantidad_enviada,
+                        "lot_id": id_lote if id_lote else False,
+                        "is_done_item": True,
+                        "date_transaction": fecha,
+                        "new_observation": novedad,
+                        "time": time_line,
+                        "user_operator_id": id_operario,
+                        "picking_id": id_transferencia,
+                    }
+
+                    new_move = request.env["stock.move.line"].sudo().create(new_move_values)
+
+                    array_result.append(
+                        {
+                            "id_move": new_move.id,
+                            "id_transferencia": id_transferencia,
+                            "id_product": new_move.product_id.id,
+                            "qty_done": new_move.qty_done,
+                            "is_done_item": new_move.is_done_item,
+                            "date_transaction": new_move.date_transaction,
+                            "new_observation": new_move.new_observation,
+                            "time_line": new_move.time,
+                            "user_operator_id": new_move.user_operator_id.id,
+                        }
+                    )
+                else:
+                    # Validar que la línea original no esté ya usada
+                    # if original_move.qty_done > 0:
+                    #     return {"code": 400, "msg": f"La línea original (ID: {id_move}) ya fue procesada"}
+
+                    update_values = {
+                        "qty_done": cantidad_enviada,
+                        "location_dest_id": id_ubicacion_destino,
+                        "location_id": id_ubicacion_origen,
+                        "lot_id": id_lote if id_lote else False,
+                        "is_done_item": True,
+                        "date_transaction": fecha,
+                        "new_observation": novedad,
+                        "time": time_line,
+                        "user_operator_id": id_operario,
+                    }
+
                     original_move.write(update_values)
 
                     array_result.append(
                         {
-                            "id_move": id_move,
+                            "id_move": original_move.id,
                             "id_transferencia": id_transferencia,
                             "id_product": original_move.product_id.id,
                             "qty_done": original_move.qty_done,
@@ -472,62 +494,6 @@ class TransaccionTransferenciasController(http.Controller):
                             "user_operator_id": original_move.user_operator_id.id,
                         }
                     )
-
-                    # Si hay más elementos, crear nuevas líneas de movimiento
-                    if len(items) > 1:
-                        move_parent = original_move.move_id
-
-                        for item in items[1:]:
-                            cantidad = item.get("cantidad_enviada", 0)
-                            ubicacion_destino = item.get("id_ubicacion_destino", 0)
-                            ubicacion_origen = item.get("id_ubicacion_origen", 0)
-                            lote = item.get("id_lote", 0)
-                            operario = item.get("id_operario")
-                            fecha = item.get("fecha_transaccion", "")
-                            tiempo = int(item.get("time_line", 0))
-                            observacion = item.get("observacion", "")
-
-                            # ✅ Verificar si el producto maneja lote
-                            if product.tracking == "lot" and not lote:
-                                return {"code": 400, "msg": "El producto requiere lote y no se ha proporcionado uno"}
-
-                            # Crear nueva línea de movimiento
-                            new_move_values = {
-                                "move_id": move_parent.id,
-                                "product_id": id_product,
-                                "product_uom_id": original_move.product_uom_id.id,
-                                "location_id": ubicacion_origen,
-                                "location_dest_id": ubicacion_destino,
-                                "qty_done": cantidad,
-                                "is_done_item": True,
-                                "date_transaction": procesar_fecha_naive(fecha, "America/Bogota") if fecha else datetime.now(pytz.utc),
-                                "new_observation": observacion,
-                                "time": tiempo,
-                                "user_operator_id": operario,
-                                "picking_id": id_transferencia,
-                            }
-
-                            if lote:
-                                new_move_values.update({"lot_id": lote})
-
-                            new_move = request.env["stock.move.line"].sudo().create(new_move_values)
-
-                            array_result.append(
-                                {
-                                    "id_move": new_move.id,
-                                    "id_transferencia": id_transferencia,
-                                    "id_product": new_move.product_id.id,
-                                    "qty_done": new_move.qty_done,
-                                    "is_done_item": new_move.is_done_item,
-                                    "date_transaction": new_move.date_transaction,
-                                    "new_observation": new_move.new_observation,
-                                    "time_line": new_move.time,
-                                    "user_operator_id": new_move.user_operator_id.id,
-                                }
-                            )
-
-                except Exception as err:
-                    return {"code": 400, "msg": f"Error al procesar el movimiento {id_move}: {str(err)}"}
 
             return {"code": 200, "result": array_result}
 
