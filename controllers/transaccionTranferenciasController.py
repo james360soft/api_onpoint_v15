@@ -84,6 +84,7 @@ class TransaccionTransferenciasController(http.Controller):
                         "end_time_transfer": picking.end_time_transfer or "",
                         "backorder_id": picking.backorder_id.id or 0,
                         "backorder_name": picking.backorder_id.name or "",
+                        "show_check_availability": picking.show_check_availability,
                         "lineas_transferencia": [],  # Líneas pendientes (is_done_item = False)
                         "lineas_transferencia_enviadas": [],  # Líneas procesadas (is_done_item = True)
                     }
@@ -146,6 +147,10 @@ class TransaccionTransferenciasController(http.Controller):
                             "location_barcode": move_line.location_id.barcode or "",
                             "weight": product.weight or 0,
                             "is_done_item": move_line.is_done_item,
+                            "date_transaction": move_line.date_transaction or "",
+                            "new_observation": move_line.new_observation or "",
+                            "time_line": move_line.time or 0,
+                            "user_operator_id": move_line.user_operator_id.id or 0,
                         }
 
                         # Añadir información específica del lote
@@ -570,6 +575,41 @@ class TransaccionTransferenciasController(http.Controller):
                 return {"code": 200, "msg": "Transferencia completada directamente", "original_id": transferencia.id, "original_state": transferencia.state}
             else:
                 return {"code": 400, "msg": f"No se pudo completar la transferencia: {result}"}
+
+        except Exception as e:
+            return {"code": 500, "msg": f"Error interno: {str(e)}"}
+
+    ## POST Comprobación de disponibilidad de transferencia
+    @http.route("/api/comprobar_disponibilidad", auth="user", type="json", methods=["POST"], csrf=False)
+    def check_availability(self, **post):
+        try:
+            user = request.env.user
+            if not user:
+                return {"code": 400, "msg": "Usuario no encontrado"}
+
+            id_transferencia = post.get("id_transferencia")
+            if not id_transferencia:
+                return {"code": 400, "msg": "ID de transferencia requerido"}
+
+            picking = request.env['stock.picking'].browse(int(id_transferencia))
+            if not picking.exists():
+                return {"code": 404, "msg": "Transferencia no encontrada"}
+
+            # ✅ Envolver en try por si falla el action_assign
+            try:
+                picking.action_assign()
+            except Exception as e:
+                return {
+                    "code": 500,
+                    "msg": f"Error al comprobar disponibilidad: {str(e)}"
+                }
+
+            return {
+                "code": 200,
+                "msg": "Disponibilidad comprobada correctamente",
+                "picking_id": picking.id,
+                "state": picking.state,
+            }
 
         except Exception as e:
             return {"code": 500, "msg": f"Error interno: {str(e)}"}
