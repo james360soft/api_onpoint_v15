@@ -429,8 +429,8 @@ class TransaccionTransferenciasController(http.Controller):
                 move_lines = request.env["stock.move.line"].sudo().search([("move_id", "=", move_parent.id)])
                 qty_total_enviada = sum(ml.qty_done for ml in move_lines)
 
-                if qty_total_enviada + cantidad_enviada > move_parent.product_uom_qty:
-                    return {"code": 400, "msg": f"La cantidad total enviada ({qty_total_enviada + cantidad_enviada}) excede la cantidad reservada ({move_parent.product_uom_qty})"}
+                # if qty_total_enviada + cantidad_enviada > move_parent.product_uom_qty:
+                #     return {"code": 400, "msg": f"La cantidad total enviada ({qty_total_enviada + cantidad_enviada}) excede la cantidad reservada ({move_parent.product_uom_qty})"}
 
                 fecha = procesar_fecha_naive(fecha_transaccion, "America/Bogota") if fecha_transaccion else datetime.now(pytz.utc)
 
@@ -591,7 +591,7 @@ class TransaccionTransferenciasController(http.Controller):
             if not id_transferencia:
                 return {"code": 400, "msg": "ID de transferencia requerido"}
 
-            picking = request.env['stock.picking'].browse(int(id_transferencia))
+            picking = request.env["stock.picking"].browse(int(id_transferencia))
             if not picking.exists():
                 return {"code": 404, "msg": "Transferencia no encontrada"}
 
@@ -599,10 +599,7 @@ class TransaccionTransferenciasController(http.Controller):
             try:
                 picking.action_assign()
             except Exception as e:
-                return {
-                    "code": 500,
-                    "msg": f"Error al comprobar disponibilidad: {str(e)}"
-                }
+                return {"code": 500, "msg": f"Error al comprobar disponibilidad: {str(e)}"}
 
             return {
                 "code": 200,
@@ -610,6 +607,104 @@ class TransaccionTransferenciasController(http.Controller):
                 "picking_id": picking.id,
                 "state": picking.state,
             }
+
+        except Exception as e:
+            return {"code": 500, "msg": f"Error interno: {str(e)}"}
+
+    ## GET Informacion rapida
+    @http.route("/api/transferencias/quickinfo", auth="user", type="json", methods=["GET"])
+    def get_quick_info(self, **kwargs):
+        try:
+            barcode = kwargs.get("barcode")
+            if not barcode:
+                return {"code": 400, "msg": "Código de barras no proporcionado"}
+
+            # Buscar PRODUCTO por barcode directo
+            product = request.env["product.product"].sudo().search([("barcode", "=", barcode)], limit=1)
+
+            # Buscar PRODUCTO por paquete
+            if not product:
+                packaging = request.env["product.packaging"].sudo().search([("barcode", "=", barcode)], limit=1)
+                if packaging:
+                    product = packaging.product_id
+
+            # Buscar PRODUCTO por lote
+            if not product:
+                lot = request.env["stock.production.lot"].sudo().search([("name", "=", barcode)], limit=1)
+                if lot:
+                    product = lot.product_id
+
+            # Mostrar info del PRODUCTO si se encontró
+            if product:
+                quants = request.env["stock.quant"].sudo().search([("product_id", "=", product.id), ("quantity", ">", 0), ("location_id.usage", "=", "internal")])
+
+                ubicaciones = []
+                for quant in quants:
+                    ubicaciones.append(
+                        {
+                            "id_ubicacion": quant.location_id.id,
+                            "ubicacion": quant.location_id.complete_name or "",
+                            "cantidad": quant.quantity or 0,
+                            "reservado": quant.reserved_quantity or 0,
+                            "catidad_mano": quant.inventory_quantity_auto_apply or 0,
+                            "codigo_barras": quant.location_id.barcode or "",
+                            "lote": quant.lot_id.name if quant.lot_id else "",
+                            "lote_id": quant.lot_id.id if quant.lot_id else 0,
+                            "fecha_eliminacion": quant.removal_date or "",
+                            "fecha_entrada": quant.in_date or "",
+                        }
+                    )
+
+                paquetes = product.packaging_ids.mapped("barcode")
+
+                return {
+                    "code": 200,
+                    "type": "product",
+                    "result": {
+                        "id": product.id,
+                        "nombre": product.display_name,
+                        "precio": product.lst_price,
+                        "cantidad_disponible": product.qty_available,
+                        "previsto": product.virtual_available,
+                        "referencia": product.default_code,
+                        "peso": product.weight,
+                        "volumen": product.volume,
+                        "codigo_barras": product.barcode,
+                        "codigos_barras_paquetes": paquetes,
+                        "imagen": product.image_128 and f"/web/image/product.product/{product.id}/image_128" or "",
+                        "categoria": product.categ_id.name,
+                        "ubicaciones": ubicaciones,
+                    },
+                }
+
+            # Buscar UBICACIÓN por código de barras
+            location = request.env["stock.location"].sudo().search([("barcode", "=", barcode), ("usage", "=", "internal")], limit=1)  # Solo internas
+
+            if location:
+                quants = request.env["stock.quant"].sudo().search([("location_id", "=", location.id), ("quantity", ">", 0)])
+
+                productos_dict = {}
+                for quant in quants:
+                    prod = quant.product_id
+                    if prod.id not in productos_dict:
+                        productos_dict[prod.id] = {"id": prod.id, "producto": prod.display_name, "cantidad": 0.0, "codigo_barras": prod.barcode, "lot_id": quant.lot_id.id if quant.lot_id else 0, "lote": quant.lot_id.name if quant.lot_id else ""}
+                    productos_dict[prod.id]["cantidad"] += quant.quantity
+
+                productos = list(productos_dict.values())
+
+                return {
+                    "code": 200,
+                    "type": "ubicacion",
+                    "result": {
+                        "nombre": location.name,
+                        "ubicacion_padre": location.location_id.name if location.location_id else "",
+                        "tipo_ubicacion": location.usage,
+                        "codigo_barras": location.barcode,
+                        "productos": productos,
+                    },
+                }
+
+            return {"code": 404, "msg": "No se encontró producto, lote, paquete ni ubicación con ese código de barras"}
 
         except Exception as e:
             return {"code": 500, "msg": f"Error interno: {str(e)}"}

@@ -4,6 +4,7 @@ from odoo.http import request
 from odoo.exceptions import AccessError
 from datetime import datetime, timedelta
 import pytz
+from odoo.fields import Date
 
 
 class TransaccionRecepcionController(http.Controller):
@@ -460,28 +461,25 @@ class TransaccionRecepcionController(http.Controller):
         try:
             user = request.env.user
 
-            # ✅ Validar usuario
             if not user:
                 return {"code": 400, "msg": "Usuario no encontrado"}
 
-            # ✅ Validar ID de producto
             if not id_producto:
                 return {"code": 400, "msg": "ID de producto no válido"}
 
-            # ✅ Buscar producto por ID
             product = request.env["product.product"].sudo().search([("id", "=", id_producto)], limit=1)
 
-            # ✅ Validar producto
             if not product:
                 return {"code": 400, "msg": "Producto no encontrado"}
 
-            # ✅ Verificar si el producto tiene seguimiento por lotes
             if product.tracking != "lot":
                 return {"code": 400, "msg": "El producto no tiene seguimiento por lotes"}
 
-            # ✅ Obtener todos los lotes del producto
-            lotes = request.env["stock.production.lot"].sudo().search([("product_id", "=", id_producto)])
-            # lotes = request.env["stock.production.lot"].sudo().search([("product_id", "=", id_producto), ("product_qty", ">", 0)])
+            # ✅ Obtener la fecha actual
+            today = Date.today()
+
+            # ✅ Obtener lotes que NO estén caducados
+            lotes = request.env["stock.production.lot"].sudo().search([("product_id", "=", id_producto), "|", ("expiration_date", "=", False), ("expiration_date", ">=", today)])  # Para considerar lotes sin fecha de caducidad
 
             array_lotes = []
 
